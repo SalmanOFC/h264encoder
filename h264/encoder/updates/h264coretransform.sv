@@ -1,37 +1,10 @@
-// -------------------------------------------------------------------------
-// -- H264 core transform - VHDL
-// -- 
-// -- Written by Andy Henson
-// -- Copyright (c) 2008 Zexia Access Ltd
-// -- All rights reserved.
 
-// -- This is the core forward transform for H264, without quantisation
-// -- this acts on a 4x4 matrix
-
-// -- We compute a result matrix Y from Cf X CfT . E
-// -- where X is the input matrix (XX00...XX33), Y the result matrix
-// -- Cf is the transform matrix, and CfT its transpose.
-
-// -- this component gives YN which is Cf X CfT without multiply by E
-// -- which is done at the quantisation stage.
-
-// -- the intermediate matrix F is X CfT, "horizontal" ones
-
-// -- FF00 is x=0,y=0,  FF01 is x=1 etc; delay 2 from X in (TT+2..TT+5)
-
-// -- Input: XXIN the input matrix X at time TT..TT+3
-// -- 4 beats of clock input horizontal rows; 4 x 9bit residuals each row; little endian order.
-// -- Outputs: YNOUT the output matrix (before scaling by E)
-// -- 16 beats of clock output YN in reverse zigzag order. TT+8..TT+23
-
-// -- Passes test vectors (testresidual.txt) (May 2008)
-
-// -- XST: 266 slices; 184 MHz; Xpower 3mW @ 120MHz
-
+// H264 - Core Transform
 
 module h264coretransform
 (
-    input logic CLK,	//fast io clock
+    input logic CLK,	// fast io clock
+    input logic RESET,
     output logic READY = '0,		//set when ready for ENABLE
     input logic ENABLE,				//values input only when this is 1
     input logic [35:0] XXIN,	 //4 x 9bit, first px is lsbs
@@ -106,8 +79,124 @@ localparam COL3 = 2'b11;
 assign yny = ynyx[3:2];
 assign ynx = ynyx [1:0];
 
+// New Parameters
+
+// For FSM-1
+logic [2:0] c_state, n_state;
+parameter IDLE = 3'b000, S0=3'b001, S1=3'b010, S2=3'b011, S3=3'b100, S4=3'b101, S5= 3'b110, S6 = 3'b111;
+
+//next_state always block
 always_comb
 begin
+    // Next State Logic
+    in = ENABLE || (ixx != 0); // Input signal to progress states
+
+    case (c_state)
+        IDLE: begin 
+                if (in) 
+                    n_state = S0;
+            end
+        S0: begin 
+                if (in) 
+                    n_state = S1;
+            end
+        S1: begin 
+                if (in) 
+                    n_state = S2;
+            end
+        S2: begin 
+                if (in) 
+                    n_state = S3;
+            end
+        S3: begin 
+                if (in) 
+                    n_state = S4;
+            end
+        S4: begin 
+                if (in) 
+                    n_state = S5;
+            end
+        S5: begin 
+                if (in) 
+                    n_state = S6;
+            end
+        S6: begin 
+                if (in) 
+                    n_state = IDLE;
+            end
+        default: n_state = c_state;
+    endcase
+
+    // Current State Logic
+    case (c_state)
+    IDLE: begin // Clear all signals
+            Enable1 = 1'b0;
+            Enable2 = 1'b0;
+            Enable3 = 1'b0;
+            Enable4 = 1'b0;
+        end
+    S0: begin // Set Enable1
+            Enable1 = 1'b1;
+            Enable2 = 1'b0;
+            Enable3 = 1'b0;
+            Enable4 = 1'b0;
+        end
+    S1: begin // Set Enable1, Enable2
+            Enable1 = 1'b1;
+            Enable2 = 1'b1;
+            Enable3 = 1'b0;
+            Enable4 = 1'b0;
+        end
+    S2: begin // Set Enable1, Enable3
+            Enable1 = 1'b1;
+            Enable2 = 1'b0;
+            Enable3 = 1'b1;
+            Enable4 = 1'b0;
+        end
+    S3: begin // Set Enable1, Enable4
+            Enable1 = 1'b1;
+            Enable2 = 1'b0;
+            Enable3 = 1'b0;
+            Enable4 = 1'b1;
+        end
+    S4: begin // Clear all signals
+            Enable1 = 1'b0;
+            Enable2 = 1'b0;
+            Enable3 = 1'b0;
+            Enable4 = 1'b0;
+        end
+    S5: begin // Clear all signals
+            Enable1 = 1'b0;
+            Enable2 = 1'b0;
+            Enable3 = 1'b0;
+            Enable4 = 1'b0;
+        end
+    S6: begin // Clear all signals
+            Enable1 = 1'b0;
+            Enable2 = 1'b0;
+            Enable3 = 1'b0;
+            Enable4 = 1'b0;
+        end
+    default: begin // Clear all signals
+            Enable1 = 1'b0;
+            Enable2 = 1'b0;
+            Enable3 = 1'b0;
+            Enable4 = 1'b0;
+        end
+    endcase // End of FSM-1
+
+    // en_2 Signal Generator for pipeline # 02
+    if ((ixx == 5) || (iyn != 0))
+        en_2 = 1;
+    else
+        en_2 = 0;
+
+    // Mux below pipeline # 02
+    if (en_2)
+        valid1_in = 1'b1;
+    else
+        valid1_in = 1'b0;
+
     case(iyn)
         4'd15 : ynyx = {ROW0, COL0};
         4'd14 : ynyx = {ROW0, COL1};
@@ -160,17 +249,43 @@ begin
             ff3pu = ffx3;
         end
     endcase
+
+    // MUX before Pipeline # 04
+    //--compute final YNOUT values (14bit from 13bit)
+    if (yny2==0) 
+    begin
+        YNOUT_IN <= {yt0[12], yt0} + {yt1[12], yt1};	//-- yt0 + yt1
+    end
+    else if (yny2==1) 
+    begin
+        YNOUT_IN <= {yt2[12], yt2} + {yt3, 1'b0};		//-- yt2 + 2*yt3
+    end
+    else if (yny2==2) 
+    begin
+        YNOUT_IN <= {yt0[12], yt0} - {yt1[12], yt1};    //-- yt0 - yt1
+    end	   
+    else
+    begin
+        YNOUT_IN <= {yt3[12], yt3} - {yt2, 1'b0};	    //-- yt3 - 2*yt2
+    end 
 end
 
 
 always_ff @(posedge CLK)
 begin
-
+    // Reset Signal
+    if (reset)
+    begin
+        ixx <= 0;   // Reset counter
+    end
+    
+    // Counter for ixx
     if (ENABLE || (ixx != 0))
     begin
         ixx <= ixx + 1;
     end 
 
+    // READY Signal Generator
     if (ixx < 3 && (iyn >= 14 || iyn==0))
     begin
         READY <= 1;
@@ -178,14 +293,18 @@ begin
     else
     begin
         READY <= 0;
-    end 
+    end
 
-		// --compute matrix ff, from XX times CfT
-		// --CfT is 1  2  1  1
-		// --       1  1 -1 -2
-		// --       1 -1 -1  2
-		// --       1 -2  1 -1
+    // FSM-1 : Moore Machine with 8 States; IDLE,S0,S1,S2,S3,S4,S5,S6
+    //state register
+    //reset is active low
+    if (RESET)
+        state <= IDLE;
+    else
+        state <= n_state;
+    // Rest of the FSM-1 is in always_comb block
 
+    // Pipeline Register # 1
     if (ENABLE)
     begin
         // --initial helpers (TT+1) (10bit from 9bit)
@@ -195,7 +314,8 @@ begin
         xt3 <= {xx0[8], xx0} - {xx3[8], xx3};			//--xx0 - xx3
     end
 
-    if ((ixx>=1) && (ixx<=4))
+    // Registers powered by FSM-1
+    if (Enable1)
     begin
         // --now compute row of FF matrix at TT+2 (12bit from 10bit)
         ffx0 <= {xt0[9], xt0[9], xt0} + {xt1[9], xt1[9], xt1};	    //--xt0 + xt1
@@ -205,53 +325,48 @@ begin
     end
 
     //--place rows 0,1,2 into slots at TT+3,4,5
-    if (ixx==2) 
+    if (Enable2) 
     begin
         ff00 <= ffx0;
         ff01 <= ffx1;
         ff02 <= ffx2;
         ff03 <= ffx3;
     end
-    else if (ixx==3)
+
+    if (Enable3)
     begin
         ff10 <= ffx0;
         ff11 <= ffx1;
         ff12 <= ffx2;
         ff13 <= ffx3;
     end 
-    else if (ixx==4) 
+
+    if (Enable4) 
     begin
         ff20 <= ffx0;
         ff21 <= ffx1;
         ff22 <= ffx2;
         ff23 <= ffx3;
-    end 
+    end
 
-		// --
-		// --compute element of matrix YN, from Cf times ff
-		// --Cf is 1  1  1  1
-		// --      2  1 -1 -2
-		// --      1 -1 -1  1
-		// --      1 -2  2 -1
-		// --
-		// --second stage helpers (13bit from 12bit) TT+6..TT+21
-		// --ff0p..3 are column entries selected above
+    // Pipeline #02
+    // Signals used in Pipeline #02 are generated above and in always_comb block
 
-    if ((ixx == 5) || (iyn != 0))
+    if (en_2)
     begin
         ff0p <= ff0pu;
         ff1p <= ff1pu;
         ff2p <= ff2pu;
         ff3p <= ff3pu;
         yny1 <= yny;
-        iyn <= iyn + 1;
-        valid1 <= 1'd1;
+        iyn  <= iyn + 1;
     end
-    else 
-    begin
-        valid1 <= 1'd0;
-    end 
-    
+
+    // valid1 Register below Pipeline # 02
+    // CLK dependent
+    valid1 <= valid1_in;
+
+    // Pipeline Register # 03
     if (valid1) 
     begin
         yt0 <= {ff0p[11], ff0p} + {ff3p[11], ff3p};	    //--ff0 + ff3
@@ -259,34 +374,22 @@ begin
         yt2 <= {ff1p[11], ff1p} - {ff2p[11], ff2p};	    //--ff1 - ff2
         yt3 <= {ff0p[11], ff0p} - {ff3p[11], ff3p};	    //--ff0 - ff3
         yny2 <= yny1;
-    end 
-
-    // --now compute output stage
-    if (valid2) 
-    begin
-        //--compute final YNOUT values (14bit from 13bit)
-        if (yny2==0) 
-        begin
-            YNOUT <= {yt0[12], yt0} + {yt1[12], yt1};	//-- yt0 + yt1
-        end
-        else if (yny2==1) 
-        begin
-            YNOUT <= {yt2[12], yt2} + {yt3, 1'b0};		//-- yt2 + 2*yt3
-        end
-        else if (yny2==2) 
-        begin
-            YNOUT <= {yt0[12], yt0} - {yt1[12], yt1};  //-- yt0 - yt1
-        end	   
-        else 
-        begin
-            YNOUT <= {yt3[12], yt3} - {yt2, 1'b0};		   //-- yt3 - 2*yt2
-        end 
     end
 
-    valid2 <= valid1;
-    VALID <= valid2;
+    // Valid2
+    valid2 <= valid1
 
-end 
+    // Pipeline # 04 (ENDING)
+    // OUTPUT "YNOUT_IN"is computed at the end of always_comb block
 
+    if (valid2)
+    begin
+        YNOUT <= YNOUT_IN;
+    end
+
+    // VALID
+    VALID <= valid2
+
+end
 endmodule
 
