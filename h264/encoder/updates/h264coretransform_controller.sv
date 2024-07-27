@@ -23,35 +23,14 @@ begin
                 if (ENABLE) 
                     n_state1 = S1;
             end
-        S1: begin 
-                if (input_1) 
-                    n_state1 = S2;
-            end
-        S2: begin 
-                if (input_1) 
-                    n_state1 = S3;
-            end
-        S3: begin 
-                if (input_1) 
-                    n_state1 = S4;
-            end
-        S4: begin 
-                if (input_1) 
-                    n_state1 = S5;
-            end
-        S5: begin 
-                if (input_1) 
-                    n_state1 = S6;
-            end
-        S6: begin 
-                if (input_1) 
-                    n_state1 = S7;
-            end
-        S7: begin 
-                if (input_1) 
-                    n_state1 = S0;
-            end
-        default: n_state1 = c_state1;
+        S1: n_state1 = S2;
+        S2: n_state1 = S3;
+        S3: n_state1 = S4;
+        S4: n_state1 = S5;
+        S5: n_state1 = S6;
+        S6: n_state1 = S7;
+        S7: n_state1 = S0;
+        default: n_state1 = S0;
     endcase
 
     // Current State Logic
