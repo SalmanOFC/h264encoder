@@ -86,6 +86,9 @@ logic en_pipeline1,en_pipeline2,en_pipeline3,en_pipeline4; // Pipeline enable si
 logic en_pipeline5,en_pipeline6,en_pipeline7,en_pipeline8; // Pipeline enable signals
 logic [13:0] ynout_in;
 logic valid1_in;
+logic [9:0] xt0_in,xt1_in,xt2_in,xt3_in;
+logic [12:0] yt0_in,yt1_in,yt2_in,yt3_in;
+logic [11:0] ffx0_in,ffx1_in,ffx2_in,ffx3_in;
 
 // Pipeline Enables
 assign en_pipeline1 = ENABLE;
@@ -106,20 +109,132 @@ h264coretransform_controller controller(
                             .en_pipeline5(en_pipeline5)
                             );
 
+// ########################################
+
+// ###### RESET, READY & COUNTERS #########
+
+// ########################################
+always_ff @(posedge CLK)
+begin
+    // Reset Signal is active low
+    if (~RESET)
+    begin
+        ixx <= 0;   // Reset counter
+    end
+    else 
+    begin
+        if (ENABLE || (ixx != 0)) // Counter for ixx
+        begin
+            ixx <= ixx + 1;
+        end
+        if (en_pipeline6)         // Counter for iyn
+        begin
+            iyn <= iyn + 1;
+        end
+    end
+
+    // READY Signal Generator
+    if (ixx < 3 && (iyn >= 14 || iyn==0))
+    begin
+        READY <= 1;
+    end
+    else
+    begin
+        READY <= 0;
+    end
+end
+
+// ########################################
+
+// ######  Pipeline Register #1  ##########
+
+// ########################################
+
 always_comb
 begin
-    // en_pipeline6 Signal Generator for pipeline # 06
-    if ((ixx == 5) || (iyn != 0))
-        en_pipeline6 = 1;
-    else
-        en_pipeline6 = 0;
-
-    // Mux below pipeline # 06
-    if (en_pipeline6)
-        valid1_in = 1'b1;
-    else
-        valid1_in = 1'b0;
+    // --initial helpers (TT+1) (10bit from 9bit)
+    xt0_in = {xx0[8], xx0} + {xx3[8], xx3};			//--xx0 + xx3
+    xt1_in = {xx1[8], xx1} + {xx2[8], xx2};			//--xx1 + xx2
+    xt2_in = {xx1[8], xx1} - {xx2[8], xx2};			//--xx1 - xx2
+    xt3_in = {xx0[8], xx0} - {xx3[8], xx3};			//--xx0 - xx3
 end
+
+// Pipeline Register # 1    
+always_ff @(posedge CLK)
+begin
+    if (ENABLE)
+    begin
+        // --initial helpers (TT+1) (10bit from 9bit)
+        xt0 <= xt0_in;			//--xx0 + xx3
+        xt1 <= xt1_in;			//--xx1 + xx2
+        xt2 <= xt2_in;			//--xx1 - xx2
+        xt3 <= xt3_in;			//--xx0 - xx3
+    end
+end
+
+// ########################################
+
+// ###### Pipeline Registers 2-5 ##########
+
+// ########################################
+
+always_comb
+begin
+    // --now compute row of FF matrix at TT+2 (12bit from 10bit)
+    ffx0_in = {xt0[9], xt0[9], xt0} + {xt1[9], xt1[9], xt1};	    //--xt0 + xt1
+    ffx1_in = {xt2[9], xt2[9], xt2} + {xt3[9], xt3, 1'b0};	 	//--xt2 + 2*xt3
+    ffx2_in = {xt0[9], xt0[9], xt0} - {xt1[9], xt1[9], xt1};	    //--xt0 - xt1
+    ffx3_in = {xt3[9], xt3[9], xt3} - {xt2[9], xt2, 1'b0};		//--xt3 - 2*xt2
+end
+// Pipeline Registers 2-5
+always_ff @(posedge CLK)
+begin
+    // Registers powered by FSM-1
+    // Pipeline 2
+    if (en_pipeline2)
+    begin
+        // --now compute row of FF matrix at TT+2 (12bit from 10bit)
+        ffx0 <= ffx0_in;
+        ffx1 <= ffx1_in;
+        ffx2 <= ffx2_in;
+        ffx3 <= ffx3_in;
+    end
+
+    //--place rows 0,1,2 into slots at TT+3,4,5
+    // Pipeline 3
+    if (en_pipeline3) 
+    begin
+        ff00 <= ffx0;
+        ff01 <= ffx1;
+        ff02 <= ffx2;
+        ff03 <= ffx3;
+    end
+
+    // Pipeline 4
+    if (en_pipeline4)
+    begin
+        ff10 <= ffx0;
+        ff11 <= ffx1;
+        ff12 <= ffx2;
+        ff13 <= ffx3;
+    end 
+
+    // Pipeline 5
+    if (en_pipeline5) 
+    begin
+        ff20 <= ffx0;
+        ff21 <= ffx1;
+        ff22 <= ffx2;
+        ff23 <= ffx3;
+    end
+end
+
+
+// ########################################
+
+// ######  Pipeline Register #6  ##########
+
+// ########################################
 
 // Muxes before Pipeline #6
 always_comb
@@ -181,6 +296,75 @@ begin
     endcase
 end
 
+// Pipeline #6 & Register below Pipeline #6
+always_comb
+begin
+    // en_pipeline6 Signal Generator for pipeline # 06
+    if ((ixx == 5) || (iyn != 0))
+        en_pipeline6 = 1;
+    else
+        en_pipeline6 = 0;
+
+    // Mux below pipeline # 06
+    if (en_pipeline6)
+        valid1_in = 1'b1;
+    else
+        valid1_in = 1'b0;
+end
+
+// Signals used in Pipeline #6 are generated above and in always_comb block
+always_ff @(posedge CLK)
+begin
+    if (en_pipeline6)
+    begin
+        ff0p <= ff0pu;
+        ff1p <= ff1pu;
+        ff2p <= ff2pu;
+        ff3p <= ff3pu;
+        yny1 <= yny;
+    end
+
+    // valid1 Register below Pipeline # 6
+    // CLK dependent
+    valid1 <= valid1_in;   // en_pipeline7
+end
+
+// ########################################
+
+// ######  Pipeline Register #7  ##########
+
+// ########################################
+
+always_comb
+begin
+    yt0_in = {ff0p[11], ff0p} + {ff3p[11], ff3p};	    //--ff0 + ff3
+    yt1_in = {ff1p[11], ff1p} + {ff2p[11], ff2p};	    //--ff1 + ff2
+    yt2_in = {ff1p[11], ff1p} - {ff2p[11], ff2p};	    //--ff1 - ff2
+    yt3_in = {ff0p[11], ff0p} - {ff3p[11], ff3p};	    //--ff0 - ff3
+end
+
+// Pipeline 7
+always_ff @(posedge CLK)
+begin
+    if (en_pipeline7) 
+    begin
+        yt0 <= yt0_in;
+        yt1 <= yt1_in;
+        yt2 <= yt2_in;
+        yt3 <= yt3_in;
+        yny2 <= yny1;
+    end
+
+    // Valid2
+    valid2 <= valid1;   // en_pipeline8
+end
+
+// ########################################
+
+// ######  Pipeline Register #8  ##########
+
+// ########################################
+
 // MUX before Pipeline # 08
 always_comb
 begin
@@ -203,123 +387,6 @@ begin
         ynout_in = {yt3[12], yt3} - {yt2, 1'b0};	    //-- yt3 - 2*yt2
     end 
 end
-
-
-always_ff @(posedge CLK)
-begin
-    // Reset Signal is active low
-    if (~RESET)
-    begin
-        ixx <= 0;   // Reset counter
-    end
-    else if (ENABLE || (ixx != 0)) // Counter for ixx
-    begin
-        ixx <= ixx + 1;
-    end 
-
-    // READY Signal Generator
-    if (ixx < 3 && (iyn >= 14 || iyn==0))
-    begin
-        READY <= 1;
-    end
-    else
-    begin
-        READY <= 0;
-    end
-end
-
-// Pipeline Register # 1    
-always_ff @(posedge CLK)
-begin
-    if (ENABLE)
-    begin
-        // --initial helpers (TT+1) (10bit from 9bit)
-        xt0 <= {xx0[8], xx0} + {xx3[8], xx3};			//--xx0 + xx3
-        xt1 <= {xx1[8], xx1} + {xx2[8], xx2};			//--xx1 + xx2
-        xt2 <= {xx1[8], xx1} - {xx2[8], xx2};			//--xx1 - xx2
-        xt3 <= {xx0[8], xx0} - {xx3[8], xx3};			//--xx0 - xx3
-    end
-end
-
-// Pipeline Registers 2-5
-always_ff @(posedge CLK)
-begin
-    // Registers powered by FSM-1
-    // Pipeline 2
-    if (en_pipeline2)
-    begin
-        // --now compute row of FF matrix at TT+2 (12bit from 10bit)
-        ffx0 <= {xt0[9], xt0[9], xt0} + {xt1[9], xt1[9], xt1};	    //--xt0 + xt1
-        ffx1 <= {xt2[9], xt2[9], xt2} + {xt3[9], xt3, 1'b0};	 	//--xt2 + 2*xt3
-        ffx2 <= {xt0[9], xt0[9], xt0} - {xt1[9], xt1[9], xt1};	    //--xt0 - xt1
-        ffx3 <= {xt3[9], xt3[9], xt3} - {xt2[9], xt2, 1'b0};		//--xt3 - 2*xt2
-    end
-
-    //--place rows 0,1,2 into slots at TT+3,4,5
-    // Pipeline 3
-    if (en_pipeline3) 
-    begin
-        ff00 <= ffx0;
-        ff01 <= ffx1;
-        ff02 <= ffx2;
-        ff03 <= ffx3;
-    end
-
-    // Pipeline 4
-    if (en_pipeline4)
-    begin
-        ff10 <= ffx0;
-        ff11 <= ffx1;
-        ff12 <= ffx2;
-        ff13 <= ffx3;
-    end 
-
-    // Pipeline 5
-    if (en_pipeline5) 
-    begin
-        ff20 <= ffx0;
-        ff21 <= ffx1;
-        ff22 <= ffx2;
-        ff23 <= ffx3;
-    end
-end
-
-
-// Pipeline #6 & Register below Pipeline #6
-// Signals used in Pipeline #6 are generated above and in always_comb block
-always_ff @(posedge CLK)
-begin
-    if (en_pipeline6)
-    begin
-        ff0p <= ff0pu;
-        ff1p <= ff1pu;
-        ff2p <= ff2pu;
-        ff3p <= ff3pu;
-        yny1 <= yny;
-        iyn  <= iyn + 1;
-    end
-
-    // valid1 Register below Pipeline # 6
-    // CLK dependent
-    valid1 <= valid1_in;   // en_pipeline7
-end
-
-// Pipeline 7
-always_ff @(posedge CLK)
-begin
-    if (en_pipeline7) 
-    begin
-        yt0 <= {ff0p[11], ff0p} + {ff3p[11], ff3p};	    //--ff0 + ff3
-        yt1 <= {ff1p[11], ff1p} + {ff2p[11], ff2p};	    //--ff1 + ff2
-        yt2 <= {ff1p[11], ff1p} - {ff2p[11], ff2p};	    //--ff1 - ff2
-        yt3 <= {ff0p[11], ff0p} - {ff3p[11], ff3p};	    //--ff0 - ff3
-        yny2 <= yny1;
-    end
-
-    // Valid2
-    valid2 <= valid1;   // en_pipeline8
-end
-
 // Pipeline # 08 (ENDING)
 always_ff @(posedge CLK)
 begin
